@@ -19,6 +19,7 @@
 #include "DatabaseOpenWidget.h"
 #include "ui_DatabaseOpenWidget.h"
 
+#include "crypto/Random.h"
 #include "gui/FileDialog.h"
 #include "gui/Icons.h"
 #include "gui/MainWindow.h"
@@ -31,7 +32,21 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QDesktopServices>
+#include <QFile>
+#include <QFileInfo>
 #include <QFont>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QVBoxLayout>
+
+#include <algorithm>
+
+#if defined(Q_OS_UNIX)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace
 {
@@ -51,10 +66,32 @@ DatabaseOpenWidget::DatabaseOpenWidget(QWidget* parent)
     , m_ui(new Ui::DatabaseOpenWidget())
     , m_db(nullptr)
     , m_deviceListener(new DeviceListener(this))
+    , m_fido2UnlockFileComponent(new QWidget(this))
+    , m_fido2UnlockFilePath(new PasswordWidget(this))
+    , m_fido2UnlockFileBrowseButton(new QPushButton(tr("Browse"), this))
+    , m_fido2PinWidget(new PasswordWidget(this))
+    , m_fido2Broker(new Fido2Broker(this))
 {
     m_ui->setupUi(this);
 
     m_ui->messageWidget->setHidden(true);
+
+    auto* fido2Layout = new QVBoxLayout(m_fido2UnlockFileComponent);
+    fido2Layout->setContentsMargins(0, 0, 0, 10);
+    fido2Layout->setSpacing(6);
+    fido2Layout->addWidget(new QLabel(tr("FIDO2 unlock file:"), m_fido2UnlockFileComponent));
+    auto* fido2PathLayout = new QHBoxLayout();
+    fido2PathLayout->addWidget(m_fido2UnlockFilePath);
+    fido2PathLayout->addWidget(m_fido2UnlockFileBrowseButton);
+    fido2Layout->addLayout(fido2PathLayout);
+    fido2Layout->addWidget(new QLabel(tr("FIDO2 PIN:"), m_fido2UnlockFileComponent));
+    fido2Layout->addWidget(m_fido2PinWidget);
+    m_fido2UnlockFilePath->setAccessibleName(tr("FIDO2 unlock file"));
+    m_fido2UnlockFilePath->setShowPassword(false);
+    m_fido2UnlockFilePath->setClearButtonEnabled(true);
+    m_fido2PinWidget->setAccessibleName(tr("FIDO2 PIN"));
+    m_fido2PinWidget->setShowPassword(false);
+    m_ui->verticalLayout_6->insertWidget(1, m_fido2UnlockFileComponent);
 
     m_hideTimer.setInterval(clearFormsDelay);
     m_hideTimer.setSingleShot(true);
@@ -62,6 +99,8 @@ DatabaseOpenWidget::DatabaseOpenWidget(QWidget* parent)
         // Reset the password field after being hidden for a set time
         m_ui->editPassword->setText("");
         m_ui->editPassword->setShowPassword(false);
+        m_fido2PinWidget->clear();
+        m_fido2PinWidget->setShowPassword(false);
     });
 
     QFont font;
@@ -75,6 +114,7 @@ DatabaseOpenWidget::DatabaseOpenWidget(QWidget* parent)
     m_ui->quickUnlockButton->setIconSize({32, 32});
 
     connect(m_ui->buttonBrowseFile, SIGNAL(clicked()), SLOT(browseKeyFile()));
+    connect(m_fido2UnlockFileBrowseButton, &QPushButton::clicked, this, &DatabaseOpenWidget::browseFido2UnlockFile);
 
     auto okBtn = m_ui->buttonBox->button(QDialogButtonBox::Ok);
     okBtn->setText(tr("Unlock"));
@@ -85,6 +125,9 @@ DatabaseOpenWidget::DatabaseOpenWidget(QWidget* parent)
     m_ui->addKeyFileLinkLabel->setText(QStringLiteral("<a href=\"#\" style=\"text-decoration: underline\">%1</a>")
                                            .arg(tr("I have a key file").toHtmlEscaped()));
     connect(m_ui->addKeyFileLinkLabel, &QLabel::linkActivated, this, &DatabaseOpenWidget::browseKeyFile);
+    connect(m_ui->unlockModeLinkLabel, &QLabel::linkActivated, this, [this] {
+        setUnlockMode(m_unlockMode == UnlockMode::Password ? UnlockMode::Fido2 : UnlockMode::Password, true);
+    });
     connect(m_ui->keyFileLineEdit, &PasswordWidget::textChanged, this, [&](const QString& text) {
         bool state = !text.isEmpty();
         m_ui->addKeyFileLinkLabel->setVisible(!state);
@@ -93,6 +136,7 @@ DatabaseOpenWidget::DatabaseOpenWidget(QWidget* parent)
     connect(m_ui->useHardwareKeyCheckBox, &QCheckBox::toggled, m_ui->hardwareKeyCombo, &QComboBox::setEnabled);
 
     m_ui->selectKeyFileComponent->setVisible(false);
+    setUnlockMode(UnlockMode::Password, false);
     toggleHardwareKeyComponent(false);
 
     QSizePolicy sp = m_ui->hardwareKeyProgress->sizePolicy();
@@ -280,7 +324,20 @@ void DatabaseOpenWidget::load(const QString& filename)
         if (lastKeyFiles.contains(m_filename)) {
             m_ui->keyFileLineEdit->setText(lastKeyFiles[m_filename].toString());
         }
+        const auto lastFido2UnlockFiles = config()->get(Config::LastFido2UnlockFiles).toHash();
+        if (lastFido2UnlockFiles.contains(m_filename)) {
+            m_fido2UnlockFilePath->setText(lastFido2UnlockFiles[m_filename].toString());
+        }
+    } else {
+        config()->remove(Config::LastFido2UnlockFiles);
     }
+
+    const auto lastUnlockModes = config()->get(Config::LastUnlockModes).toHash();
+    bool validUnlockMode = false;
+    const auto unlockMode = lastUnlockModes.value(m_filename).toInt(&validUnlockMode);
+    setUnlockMode(validUnlockMode && unlockMode == static_cast<int>(UnlockMode::Fido2) ? UnlockMode::Fido2
+                                                                                       : UnlockMode::Password,
+                  false);
 
     toggleQuickUnlockScreen();
 
@@ -296,6 +353,12 @@ void DatabaseOpenWidget::clearForms()
     m_ui->keyFileLineEdit->clear();
     m_ui->keyFileLineEdit->setShowPassword(false);
     m_ui->keyFileLineEdit->setClearButtonEnabled(true);
+    m_fido2UnlockFilePath->clear();
+    m_fido2UnlockFilePath->setShowPassword(false);
+    m_fido2PinWidget->clear();
+    m_fido2PinWidget->setShowPassword(false);
+    m_fido2Broker->cancel();
+    setUnlockMode(UnlockMode::Password, false);
     m_ui->hardwareKeyCombo->clear();
     toggleHardwareKeyComponent(false);
     toggleQuickUnlockScreen();
@@ -313,6 +376,43 @@ QString DatabaseOpenWidget::filename()
     return m_filename;
 }
 
+void DatabaseOpenWidget::setUnlockMode(UnlockMode mode, bool remember)
+{
+    m_unlockMode = mode;
+    const auto useFido2 = m_unlockMode == UnlockMode::Fido2;
+    m_ui->enterPasswordComponent->setVisible(!useFido2);
+    m_fido2UnlockFileComponent->setVisible(useFido2);
+    updateUnlockModeLink();
+
+    if (remember && !m_filename.isEmpty()) {
+        auto lastUnlockModes = config()->get(Config::LastUnlockModes).toHash();
+        lastUnlockModes.insert(m_filename, static_cast<int>(m_unlockMode));
+        config()->set(Config::LastUnlockModes, lastUnlockModes);
+    }
+
+    if (!isOnQuickUnlockScreen()) {
+        focusUnlockInput();
+    }
+}
+
+void DatabaseOpenWidget::updateUnlockModeLink()
+{
+    const auto linkText = m_unlockMode == UnlockMode::Fido2 ? tr("Use password to unlock") : tr("Use FIDO2 to unlock");
+    m_ui->unlockModeLinkLabel->setText(
+        QStringLiteral("<a href=\"#\" style=\"text-decoration: underline\">%1</a>").arg(linkText));
+}
+
+void DatabaseOpenWidget::focusUnlockInput()
+{
+    auto* input =
+        m_unlockMode == UnlockMode::Password
+            ? m_ui->editPassword
+            : (m_fido2UnlockFilePath->text().isEmpty() ? m_fido2UnlockFilePath.data() : m_fido2PinWidget.data());
+    if (input->isVisible()) {
+        input->setFocus();
+    }
+}
+
 void DatabaseOpenWidget::enterKey(const QString& pw, const QString& keyFile)
 {
     if (unlockingDatabase()) {
@@ -322,6 +422,7 @@ void DatabaseOpenWidget::enterKey(const QString& pw, const QString& keyFile)
 
     m_ui->editPassword->setText(pw);
     m_ui->keyFileLineEdit->setText(keyFile);
+    setUnlockMode(UnlockMode::Password, false);
     m_blockQuickUnlock = true;
     openDatabase();
 }
@@ -337,7 +438,18 @@ void DatabaseOpenWidget::openDatabase()
     m_ui->messageWidget->hide();
     QCoreApplication::processEvents();
 
-    const auto databaseKey = buildDatabaseKey();
+    if (m_unlockMode == UnlockMode::Fido2 && !canPerformQuickUnlock()) {
+        startFido2Unlock(blockQuickUnlock);
+        return;
+    }
+    openDatabaseWithKey(blockQuickUnlock);
+}
+
+void DatabaseOpenWidget::openDatabaseWithKey(bool blockQuickUnlock,
+                                             const QSharedPointer<PasswordKey>& fido2PasswordKey,
+                                             const QSharedPointer<FileKey>& fido2FileKey)
+{
+    const auto databaseKey = buildDatabaseKey(fido2PasswordKey, fido2FileKey);
     if (!databaseKey) {
         setUserInteractionLock(false);
         return;
@@ -383,6 +495,12 @@ void DatabaseOpenWidget::openDatabase()
         emit dialogFinished(true);
         clearForms();
     } else {
+        if (fido2PasswordKey) {
+            handleFido2UnlockError(
+                tr("The FIDO2 unlock file is wrong or stale for this database. Select the correct file or re-enroll "
+                   "after changing the database password or key file."));
+            return;
+        }
         if (!isOnQuickUnlockScreen() && m_ui->editPassword->text().isEmpty() && !m_retryUnlockWithEmptyPassword) {
             QScopedPointer<QMessageBox> msgBox(new QMessageBox(this));
             msgBox->setIcon(QMessageBox::Critical);
@@ -417,7 +535,170 @@ void DatabaseOpenWidget::openDatabase()
     }
 }
 
-QSharedPointer<CompositeKey> DatabaseOpenWidget::buildDatabaseKey()
+void DatabaseOpenWidget::startFido2Unlock(bool blockQuickUnlock)
+{
+#if !defined(Q_OS_UNIX)
+    Q_UNUSED(blockQuickUnlock)
+    handleFido2UnlockError(tr("FIDO2 unlock files are unavailable on this platform."));
+    return;
+#else
+    const auto unlockFilePath = QFile::encodeName(m_fido2UnlockFilePath->text());
+    const auto fd = ::open(unlockFilePath.constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        handleFido2UnlockError(tr("Failed to open FIDO2 unlock file."));
+        return;
+    }
+
+    struct stat status{};
+    // Symlinks are allowed; fstat validates the exact opened target.
+    if (::fstat(fd, &status) != 0) {
+        ::close(fd);
+        handleFido2UnlockError(tr("Failed to inspect FIDO2 unlock file."));
+        return;
+    }
+    if (!S_ISREG(status.st_mode)) {
+        ::close(fd);
+        handleFido2UnlockError(tr("FIDO2 unlock file must be a regular file."));
+        return;
+    }
+    if (status.st_size < 0 || status.st_size > Fido2UnlockFile::MAXIMUM_FILE_SIZE) {
+        ::close(fd);
+        handleFido2UnlockError(tr("FIDO2 unlock file has an invalid size."));
+        return;
+    }
+
+    QFile unlockFile;
+    if (!unlockFile.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        handleFido2UnlockError(tr("Failed to open FIDO2 unlock file."));
+        return;
+    }
+    auto unlockFileData = unlockFile.read(Fido2UnlockFile::MAXIMUM_FILE_SIZE + 1);
+    if (unlockFile.error() != QFileDevice::NoError) {
+        handleFido2UnlockError(tr("Failed to read FIDO2 unlock file."));
+        return;
+    }
+    if (unlockFileData.size() > Fido2UnlockFile::MAXIMUM_FILE_SIZE || !unlockFile.atEnd()) {
+        handleFido2UnlockError(tr("FIDO2 unlock file is too large."));
+        return;
+    }
+    Fido2UnlockFile::Envelope envelope;
+    QString error;
+    if (!Fido2UnlockFile::parse(unlockFileData, envelope, error)) {
+        handleFido2UnlockError(error);
+        return;
+    }
+    if (config()->get(Config::RememberLastKeyFiles).toBool()) {
+        auto lastFido2UnlockFiles = config()->get(Config::LastFido2UnlockFiles).toHash();
+        lastFido2UnlockFiles.insert(m_filename, m_fido2UnlockFilePath->text());
+        config()->set(Config::LastFido2UnlockFiles, lastFido2UnlockFiles);
+    }
+
+    auto pin = m_fido2PinWidget->text().toUtf8();
+    m_fido2PinWidget->clear();
+    m_fido2PinWidget->setShowPassword(false);
+    if (pin.size() < 4 || pin.size() > 63 || pin.contains('\0')) {
+        Fido2UnlockFile::clearSecret(pin);
+        handleFido2UnlockError(tr("The FIDO2 PIN must contain between 4 and 63 UTF-8 bytes."));
+        return;
+    }
+
+    Fido2Broker::AssertRequest request;
+    request.clientDataHash = randomGen()->randomArray(Fido2UnlockFile::HMAC_SECRET_SIZE);
+    request.hmacSalt = envelope.envelopeSalt;
+    request.pin = pin;
+    Fido2UnlockFile::clearSecret(pin);
+    for (const auto& wrapper : envelope.wrappers) {
+        request.credentialIds.append(wrapper.credentialId);
+    }
+
+    m_ui->messageWidget->showMessage(tr("Touch the FIDO2 security key to unlock the database."),
+                                     MessageWidget::Information,
+                                     MessageWidget::DisableAutoHide);
+    QPointer<DatabaseOpenWidget> guard(this);
+    const auto clientDataHash = request.clientDataHash;
+    const auto started = m_fido2Broker->getAssertion(
+        request,
+        [guard, envelope, clientDataHash, blockQuickUnlock](const Fido2Broker::AssertResponse& response,
+                                                            const QString& callbackError) {
+            if (guard) {
+                guard->finishFido2Unlock(response, callbackError, envelope, clientDataHash, blockQuickUnlock);
+            }
+        },
+        error);
+    Fido2UnlockFile::clearSecret(request.pin);
+    if (!started) {
+        handleFido2UnlockError(error);
+    }
+#endif
+}
+
+void DatabaseOpenWidget::finishFido2Unlock(const Fido2Broker::AssertResponse& response,
+                                           const QString& error,
+                                           const Fido2UnlockFile::Envelope& envelope,
+                                           const QByteArray& clientDataHash,
+                                           bool blockQuickUnlock)
+{
+    if (!error.isEmpty()) {
+        handleFido2UnlockError(error);
+        return;
+    }
+
+    const auto matchingWrapperCount =
+        std::count_if(envelope.wrappers.cbegin(), envelope.wrappers.cend(), [&response](const auto& wrapper) {
+            return wrapper.credentialId == response.selectedCredentialId;
+        });
+    if (matchingWrapperCount != 1) {
+        handleFido2UnlockError(tr("FIDO2 broker selected an unknown credential."));
+        return;
+    }
+    const auto wrapper =
+        std::find_if(envelope.wrappers.cbegin(), envelope.wrappers.cend(), [&response](const auto& item) {
+            return item.credentialId == response.selectedCredentialId;
+        });
+
+    QString verificationError;
+    if (!Fido2UnlockFile::verifyAssertion(
+            *wrapper, clientDataHash, response.authenticatorData, response.signature, verificationError)) {
+        handleFido2UnlockError(verificationError);
+        return;
+    }
+    QByteArray rawPasswordKey;
+    QByteArray rawFileKey;
+    if (!Fido2UnlockFile::unwrapKeys(
+            envelope, *wrapper, response.hmacSecret, rawPasswordKey, rawFileKey, verificationError)) {
+        handleFido2UnlockError(verificationError);
+        return;
+    }
+    const auto passwordKey = PasswordKey::fromRawKey(rawPasswordKey);
+    QSharedPointer<FileKey> fileKey;
+    if (envelope.payloadPolicy == Fido2UnlockFile::PayloadPolicy::PasswordAndKeyFile) {
+        fileKey = QSharedPointer<FileKey>::create();
+        fileKey->setRawKey(rawFileKey);
+    }
+    Fido2UnlockFile::clearSecret(rawPasswordKey);
+    Fido2UnlockFile::clearSecret(rawFileKey);
+    m_ui->messageWidget->hideMessage();
+    // Return to Fido2Broker first so it clears the HMAC secret before a
+    // potentially expensive database KDF or modal version warning.
+    QTimer::singleShot(0, this, [this, blockQuickUnlock, passwordKey, fileKey] {
+        openDatabaseWithKey(blockQuickUnlock, passwordKey, fileKey);
+    });
+}
+
+void DatabaseOpenWidget::handleFido2UnlockError(const QString& error)
+{
+    setUserInteractionLock(false);
+    m_retryUnlockWithEmptyPassword = false;
+    setUnlockMode(UnlockMode::Fido2, false);
+    m_ui->messageWidget->showMessage(error, MessageWidget::Error);
+    auto* input = m_fido2UnlockFilePath->text().isEmpty() ? m_fido2UnlockFilePath.data() : m_fido2PinWidget.data();
+    input->selectAll();
+    focusUnlockInput();
+}
+
+QSharedPointer<CompositeKey> DatabaseOpenWidget::buildDatabaseKey(const QSharedPointer<PasswordKey>& fido2PasswordKey,
+                                                                  const QSharedPointer<FileKey>& fido2FileKey)
 {
     auto databaseKey = QSharedPointer<CompositeKey>::create();
 
@@ -434,46 +715,56 @@ QSharedPointer<CompositeKey> DatabaseOpenWidget::buildDatabaseKey()
         return databaseKey;
     }
 
-    if (!m_ui->editPassword->text().isEmpty() || m_retryUnlockWithEmptyPassword) {
-        databaseKey->addKey(QSharedPointer<PasswordKey>::create(m_ui->editPassword->text()));
+    if (fido2PasswordKey) {
+        databaseKey->addKey(fido2PasswordKey);
     }
 
-    auto lastKeyFiles = config()->get(Config::LastKeyFiles).toHash();
-    lastKeyFiles.remove(m_filename);
-
-    auto key = QSharedPointer<FileKey>::create();
-    QString keyFilename = m_ui->keyFileLineEdit->text();
-    if (!keyFilename.isEmpty()) {
-        QString errorMsg;
-        if (!key->load(keyFilename, &errorMsg)) {
-            m_ui->messageWidget->showMessage(tr("Failed to open key file: %1").arg(errorMsg), MessageWidget::Error);
-            return {};
+    if (fido2FileKey) {
+        // Policy 2 reconstructs the native FileKey, so an external selection
+        // must not add the same key material a second time.
+        databaseKey->addKey(fido2FileKey);
+    } else {
+        if (!fido2PasswordKey && (!m_ui->editPassword->text().isEmpty() || m_retryUnlockWithEmptyPassword)) {
+            databaseKey->addKey(QSharedPointer<PasswordKey>::create(m_ui->editPassword->text()));
         }
-        if (key->type() != FileKey::KeePass2XMLv2 && key->type() != FileKey::Hashed
-            && !config()->get(Config::Messages_NoLegacyKeyFileWarning).toBool()) {
-            QMessageBox legacyWarning;
-            legacyWarning.setWindowTitle(tr("Old key file format"));
-            legacyWarning.setText(tr("You are using an old key file format which KeePassXC may<br>"
-                                     "stop supporting in the future.<br><br>"
-                                     "Please consider generating a new key file by going to:<br>"
-                                     "<strong>Database &gt; Database Security &gt; Change Key File.</strong><br>"));
-            legacyWarning.setIcon(QMessageBox::Icon::Warning);
-            legacyWarning.addButton(QMessageBox::Ok);
-            legacyWarning.setDefaultButton(QMessageBox::Ok);
-            legacyWarning.setCheckBox(new QCheckBox(tr("Don't show this warning again")));
 
-            connect(legacyWarning.checkBox(), &QCheckBox::stateChanged, this, [](int state) {
-                config()->set(Config::Messages_NoLegacyKeyFileWarning, state == Qt::CheckState::Checked);
-            });
+        auto lastKeyFiles = config()->get(Config::LastKeyFiles).toHash();
+        lastKeyFiles.remove(m_filename);
 
-            legacyWarning.exec();
+        auto key = QSharedPointer<FileKey>::create();
+        QString keyFilename = m_ui->keyFileLineEdit->text();
+        if (!keyFilename.isEmpty()) {
+            QString errorMsg;
+            if (!key->load(keyFilename, &errorMsg)) {
+                m_ui->messageWidget->showMessage(tr("Failed to open key file: %1").arg(errorMsg), MessageWidget::Error);
+                return {};
+            }
+            if (key->type() != FileKey::KeePass2XMLv2 && key->type() != FileKey::Hashed
+                && !config()->get(Config::Messages_NoLegacyKeyFileWarning).toBool()) {
+                QMessageBox legacyWarning;
+                legacyWarning.setWindowTitle(tr("Old key file format"));
+                legacyWarning.setText(tr("You are using an old key file format which KeePassXC may<br>"
+                                         "stop supporting in the future.<br><br>"
+                                         "Please consider generating a new key file by going to:<br>"
+                                         "<strong>Database &gt; Database Security &gt; Change Key File.</strong><br>"));
+                legacyWarning.setIcon(QMessageBox::Icon::Warning);
+                legacyWarning.addButton(QMessageBox::Ok);
+                legacyWarning.setDefaultButton(QMessageBox::Ok);
+                legacyWarning.setCheckBox(new QCheckBox(tr("Don't show this warning again")));
+
+                connect(legacyWarning.checkBox(), &QCheckBox::stateChanged, this, [](int state) {
+                    config()->set(Config::Messages_NoLegacyKeyFileWarning, state == Qt::CheckState::Checked);
+                });
+
+                legacyWarning.exec();
+            }
+            databaseKey->addKey(key);
+            lastKeyFiles.insert(m_filename, keyFilename);
         }
-        databaseKey->addKey(key);
-        lastKeyFiles.insert(m_filename, keyFilename);
-    }
 
-    if (config()->get(Config::RememberLastKeyFiles).toBool()) {
-        config()->set(Config::LastKeyFiles, lastKeyFiles);
+        if (config()->get(Config::RememberLastKeyFiles).toBool()) {
+            config()->set(Config::LastKeyFiles, lastKeyFiles);
+        }
     }
 
     auto lastChallengeResponse = config()->get(Config::LastChallengeResponse).toHash();
@@ -498,6 +789,8 @@ QSharedPointer<CompositeKey> DatabaseOpenWidget::buildDatabaseKey()
 
 void DatabaseOpenWidget::reject()
 {
+    m_fido2Broker->cancel();
+    setUserInteractionLock(false);
     emit dialogFinished(false);
 }
 
@@ -535,6 +828,25 @@ bool DatabaseOpenWidget::browseKeyFile()
     }
 
     m_ui->keyFileLineEdit->setText(filename);
+    return true;
+}
+
+bool DatabaseOpenWidget::browseFido2UnlockFile()
+{
+    const auto filename = fileDialog()->getOpenFileName(
+        this, tr("Select FIDO2 unlock file"), FileDialog::getLastDir("fido2-unlock-file"), tr("All files (*)"));
+    if (filename.isEmpty()) {
+        return false;
+    }
+    m_fido2UnlockFilePath->setText(filename);
+    if (config()->get(Config::RememberLastKeyFiles).toBool()) {
+        auto lastFido2UnlockFiles = config()->get(Config::LastFido2UnlockFiles).toHash();
+        lastFido2UnlockFiles.insert(m_filename, filename);
+        config()->set(Config::LastFido2UnlockFiles, lastFido2UnlockFiles);
+        FileDialog::saveLastDir("fido2-unlock-file", filename, true);
+    } else {
+        FileDialog::saveLastDir("fido2-unlock-file", {});
+    }
     return true;
 }
 
@@ -599,15 +911,23 @@ void DatabaseOpenWidget::hardwareKeyResponse(bool found)
 
 void DatabaseOpenWidget::setUserInteractionLock(bool state)
 {
+    m_ui->centralStack->setEnabled(true);
+    m_ui->enterPasswordComponent->setEnabled(!state);
+    m_fido2UnlockFileComponent->setEnabled(!state);
+    m_ui->selectKeyFileComponent->setEnabled(!state);
+    m_ui->addAdditionalKeysComponent->setEnabled(!state);
+    m_ui->quickUnlockButton->setEnabled(!state);
+    m_ui->resetQuickUnlockButton->setEnabled(!state);
+    m_ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(!state);
+    m_ui->buttonBox->button(QDialogButtonBox::Close)->setEnabled(true);
+
     if (state) {
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-        m_ui->centralStack->setEnabled(false);
     } else {
         // Ensure no override cursors remain
         while (QApplication::overrideCursor()) {
             QApplication::restoreOverrideCursor();
         }
-        m_ui->centralStack->setEnabled(true);
     }
     m_unlockingDatabase = state;
 }
@@ -633,9 +953,7 @@ void DatabaseOpenWidget::toggleQuickUnlockScreen()
     } else {
         m_ui->centralStack->setCurrentIndex(0);
         // Work around qt issue where focus is stolen even if not visible
-        if (m_ui->editPassword->isVisible()) {
-            m_ui->editPassword->setFocus();
-        }
+        focusUnlockInput();
     }
 }
 

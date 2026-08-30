@@ -56,6 +56,8 @@ set(core_SOURCES
         crypto/kdf/Kdf.cpp
         crypto/kdf/AesKdf.cpp
         crypto/kdf/Argon2Kdf.cpp
+        fido2/Fido2Broker.cpp
+        fido2/Fido2UnlockFile.cpp
         format/BitwardenReader.cpp
         format/CsvExporter.cpp
         format/CsvParser.cpp

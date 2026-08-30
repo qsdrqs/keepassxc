@@ -568,6 +568,7 @@ void ApplicationSettingsWidget::saveSettings()
     if (!config()->get(Config::RememberLastKeyFiles).toBool()) {
         config()->remove(Config::LastDir);
         config()->remove(Config::LastKeyFiles);
+        config()->remove(Config::LastFido2UnlockFiles);
         config()->remove(Config::LastChallengeResponse);
     }
 

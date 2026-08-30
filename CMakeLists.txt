@@ -47,6 +47,7 @@ option(WITH_APP_BUNDLE "Enable Application Bundle for macOS" ON)
 option(WITH_CCACHE "Use ccache for build" OFF)
 option(WITH_X11 "Enable building with X11 dependencies" ON)
 option(WITH_BUILD_QT "Build Qt6 as a dependency" OFF)
+set(KPXC_FIDO2_BROKER_PATH "" CACHE FILEPATH "Fixed path to the packaged FIDO2 broker")
 
 # Advanced Features Control
 option(KPXC_MINIMAL "Build KeePassXC with the minimal feature set required for basic usage" OFF)

@@ -427,6 +427,31 @@
                 </widget>
                </item>
                <item>
+                <widget class="QLabel" name="unlockModeLinkLabel">
+                  <property name="cursor">
+                   <cursorShape>PointingHandCursor</cursorShape>
+                  </property>
+                  <property name="focusPolicy">
+                   <enum>Qt::TabFocus</enum>
+                  </property>
+                  <property name="accessibleDescription">
+                   <string>Click to change the database unlock mode.</string>
+                  </property>
+                  <property name="text">
+                   <string>&lt;a href=&quot;#&quot; style=&quot;text-decoration: underline&quot;&gt;Use FIDO2 to unlock&lt;/a&gt;</string>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="margin">
+                   <number>1</number>
+                  </property>
+                  <property name="textInteractionFlags">
+                   <set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse</set>
+                  </property>
+                 </widget>
+               </item>
+               <item>
                 <widget class="QLabel" name="addKeyFileLinkLabel">
                  <property name="cursor">
                   <cursorShape>PointingHandCursor</cursorShape>
@@ -656,6 +681,7 @@
   <tabstop>useHardwareKeyCheckBox</tabstop>
   <tabstop>hardwareKeyCombo</tabstop>
   <tabstop>refreshHardwareKeys</tabstop>
+  <tabstop>unlockModeLinkLabel</tabstop>
   <tabstop>addKeyFileLinkLabel</tabstop>
   <tabstop>buttonBox</tabstop>
  </tabstops>
