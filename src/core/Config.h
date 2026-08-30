@@ -177,6 +177,7 @@ public:
         SSHAgent_UsePageant,
         SSHAgent_AuthSockOverride,
         SSHAgent_SecurityKeyProviderOverride,
+        SSHAgent_AutoLoadAllowlists,
 
         FdoSecrets_Enabled,
         FdoSecrets_ShowNotification,

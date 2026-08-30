@@ -555,6 +555,11 @@ void SSHAgent::databaseUnlocked(const QSharedPointer<Database>& db)
         return;
     }
 
+    const auto autoLoadAllowlists = config()->get(Config::SSHAgent_AutoLoadAllowlists).toHash();
+    const auto databaseId = db->rootGroup()->uuid().toString();
+    const auto hasAutoLoadAllowlist = autoLoadAllowlists.contains(databaseId);
+    const auto autoLoadAllowlist = autoLoadAllowlists.value(databaseId).toStringList();
+
     for (auto entry : db->rootGroup()->entriesRecursive()) {
         if (entry->isRecycled()) {
             continue;
@@ -567,6 +572,10 @@ void SSHAgent::databaseUnlocked(const QSharedPointer<Database>& db)
         }
 
         if (!settings.allowUseOfSshKey() || !settings.addAtDatabaseOpen()) {
+            continue;
+        }
+
+        if (hasAutoLoadAllowlist && !autoLoadAllowlist.contains(entry->uuid().toString())) {
             continue;
         }
 

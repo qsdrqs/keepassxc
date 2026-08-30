@@ -160,6 +160,7 @@ private:
 #endif
 #ifdef KPXC_FEATURE_SSHAGENT
     void setupSSHAgent();
+    void updateSSHAgentAutoLoadAllowlist();
 #endif
     void setupProperties();
     void setupHistory();
