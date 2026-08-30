@@ -79,6 +79,8 @@ public:
 
         LastDatabases,
         LastKeyFiles,
+        LastFido2UnlockFiles,
+        LastUnlockModes,
         LastChallengeResponse,
         LastActiveDatabase,
         LastOpenedDatabases,

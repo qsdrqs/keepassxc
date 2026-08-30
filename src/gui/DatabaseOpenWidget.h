@@ -23,13 +23,20 @@
 #include <QScopedPointer>
 #include <QTimer>
 
+#include "fido2/Fido2Broker.h"
+#include "fido2/Fido2UnlockFile.h"
 #include "gui/DialogyWidget.h"
 #include "gui/MessageWidget.h"
 #include "osutils/DeviceListener.h"
 
 class CompositeKey;
 class Database;
+class FileKey;
 class QFile;
+class PasswordKey;
+class QPushButton;
+class PasswordWidget;
+class QWidget;
 
 namespace Ui
 {
@@ -64,7 +71,8 @@ signals:
 protected:
     bool event(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
-    QSharedPointer<CompositeKey> buildDatabaseKey();
+    QSharedPointer<CompositeKey> buildDatabaseKey(const QSharedPointer<PasswordKey>& fido2PasswordKey = {},
+                                                  const QSharedPointer<FileKey>& fido2FileKey = {});
     void setUserInteractionLock(bool state);
 
     const QScopedPointer<Ui::DatabaseOpenWidget> m_ui;
@@ -78,13 +86,40 @@ protected slots:
 
 private slots:
     bool browseKeyFile();
+    bool browseFido2UnlockFile();
     void toggleHardwareKeyComponent(bool state);
     void closeDatabase();
     void pollHardwareKey(bool manualTrigger = false, int delay = 0);
     void hardwareKeyResponse(bool found);
 
 private:
+    enum class UnlockMode
+    {
+        Password = 0,
+        Fido2 = 1,
+    };
+
+    void setUnlockMode(UnlockMode mode, bool remember);
+    void updateUnlockModeLink();
+    void focusUnlockInput();
+    void openDatabaseWithKey(bool blockQuickUnlock,
+                             const QSharedPointer<PasswordKey>& fido2PasswordKey = {},
+                             const QSharedPointer<FileKey>& fido2FileKey = {});
+    void startFido2Unlock(bool blockQuickUnlock);
+    void finishFido2Unlock(const Fido2Broker::AssertResponse& response,
+                           const QString& error,
+                           const Fido2UnlockFile::Envelope& envelope,
+                           const QByteArray& clientDataHash,
+                           bool blockQuickUnlock);
+    void handleFido2UnlockError(const QString& error);
+
     QPointer<DeviceListener> m_deviceListener;
+    QPointer<QWidget> m_fido2UnlockFileComponent;
+    QPointer<PasswordWidget> m_fido2UnlockFilePath;
+    QPointer<QPushButton> m_fido2UnlockFileBrowseButton;
+    QPointer<PasswordWidget> m_fido2PinWidget;
+    QPointer<Fido2Broker> m_fido2Broker;
+    UnlockMode m_unlockMode = UnlockMode::Password;
     bool m_pollingHardwareKey = false;
     bool m_manualHardwareKeyRefresh = false;
     bool m_blockQuickUnlock = false;
