@@ -32,6 +32,7 @@ private slots:
     void init();
     void testConfiguration();
     void testIdentity();
+    void testAutoLoadAllowlists();
     void testRemoveOnClose();
     void testLifetimeConstraint();
     void testConfirmConstraint();

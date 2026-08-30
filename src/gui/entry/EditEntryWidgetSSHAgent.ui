@@ -26,7 +26,7 @@
    <property name="bottomMargin">
     <number>0</number>
    </property>
-   <item row="1" column="1" colspan="4">
+   <item row="2" column="1" colspan="4">
     <widget class="QCheckBox" name="removeKeyFromAgentCheckBox">
      <property name="text">
       <string>Remove key from agent when database is closed/locked</string>
@@ -50,6 +50,19 @@
      </property>
     </widget>
    </item>
+   <item row="1" column="1" colspan="4">
+    <widget class="QCheckBox" name="autoLoadOnThisComputerCheckBox">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="toolTip">
+      <string>This setting applies only to this computer and is not stored in the database.</string>
+     </property>
+     <property name="text">
+      <string>Allow automatic loading of this key on this computer</string>
+     </property>
+    </widget>
+   </item>
    <item row="15" column="3" colspan="2">
     <widget class="QPlainTextEdit" name="publicKeyEdit">
      <property name="font">
@@ -69,7 +82,7 @@
      </property>
     </widget>
    </item>
-   <item row="4" column="1">
+   <item row="5" column="1">
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>
@@ -112,7 +125,7 @@
      </property>
     </widget>
    </item>
-   <item row="5" column="1" colspan="4">
+   <item row="6" column="1" colspan="4">
     <widget class="QGroupBox" name="privateKeyGroupBox">
      <property name="title">
       <string>Private key</string>
@@ -206,7 +219,7 @@
      </layout>
     </widget>
    </item>
-   <item row="2" column="1" colspan="4">
+   <item row="3" column="1" colspan="4">
     <widget class="QCheckBox" name="requireUserConfirmationCheckBox">
      <property name="text">
       <string>Require user confirmation when this key is used</string>
@@ -245,7 +258,7 @@
      </item>
     </layout>
    </item>
-   <item row="3" column="1" colspan="4">
+   <item row="4" column="1" colspan="4">
     <layout class="QHBoxLayout" name="removeKeyLayout">
      <item>
       <widget class="QCheckBox" name="lifetimeCheckBox">
@@ -334,6 +347,7 @@
  </widget>
  <tabstops>
   <tabstop>addKeyToAgentCheckBox</tabstop>
+  <tabstop>autoLoadOnThisComputerCheckBox</tabstop>
   <tabstop>removeKeyFromAgentCheckBox</tabstop>
   <tabstop>requireUserConfirmationCheckBox</tabstop>
   <tabstop>lifetimeCheckBox</tabstop>

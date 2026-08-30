@@ -18,12 +18,16 @@
 #include "TestSSHAgent.h"
 #include "config-keepassx-tests.h"
 #include "core/Config.h"
+#include "core/Database.h"
+#include "core/Entry.h"
+#include "core/Group.h"
 #include "crypto/Crypto.h"
 #include "sshagent/KeeAgentSettings.h"
 #include "sshagent/OpenSSHKeyGen.h"
 #include "sshagent/SSHAgent.h"
 
 #include <QElapsedTimer>
+#include <QScopeGuard>
 #include <QTest>
 
 QTEST_GUILESS_MAIN(TestSSHAgent)
@@ -34,7 +38,8 @@ void TestSSHAgent::initTestCase()
     QLocale::setDefault(QLocale::c());
 
     // Create temporary config file
-    Config::createConfigFromFile(TemporaryFile::createTempConfigFile(), {});
+    const auto configFile = TemporaryFile::createTempConfigFile();
+    Config::createConfigFromFile(configFile, configFile);
 
     // default config must not enable agent
     SSHAgent agent;
@@ -96,6 +101,7 @@ void TestSSHAgent::init()
     agent.setEnabled(false);
     QString empty;
     agent.setAuthSockOverride(empty);
+    config()->remove(Config::SSHAgent_AutoLoadAllowlists);
 }
 
 void TestSSHAgent::testConfiguration()
@@ -130,6 +136,10 @@ void TestSSHAgent::testIdentity()
     KeeAgentSettings settings;
     bool keyInAgent;
 
+    QVariantHash autoLoadAllowlists;
+    autoLoadAllowlists.insert(QStringLiteral("database"), QStringList{});
+    config()->set(Config::SSHAgent_AutoLoadAllowlists, autoLoadAllowlists);
+
     // test adding a key works
     QVERIFY(agent.addIdentity(m_key, settings, m_uuid));
     QVERIFY(agent.checkIdentity(m_key, keyInAgent) && keyInAgent);
@@ -144,6 +154,80 @@ void TestSSHAgent::testIdentity()
     // test removing a key works
     QVERIFY(agent.removeIdentity(m_key));
     QVERIFY(agent.checkIdentity(m_key, keyInAgent) && !keyInAgent);
+}
+
+void TestSSHAgent::testAutoLoadAllowlists()
+{
+    SSHAgent agent;
+    agent.setEnabled(true);
+    agent.setAuthSockOverride(m_agentSocketFileName);
+
+    QVERIFY(agent.isAgentRunning());
+    QVERIFY(agent.clearAllAgentIdentities());
+    const auto cleanupAgent = qScopeGuard([&agent] {
+        agent.clearAllAgentIdentities();
+        agent.setEnabled(false);
+    });
+
+    auto database = QSharedPointer<Database>::create();
+    OpenSSHKey allowedKey = m_key;
+    OpenSSHKey deniedKey;
+    OpenSSHKey manualOnlyKey;
+    QVERIFY(OpenSSHKeyGen::generateEd25519(deniedKey));
+    QVERIFY(OpenSSHKeyGen::generateEd25519(manualOnlyKey));
+
+    const auto addEntry = [&database](OpenSSHKey& key, bool addAtDatabaseOpen) {
+        auto entry = new Entry();
+        entry->setUuid(QUuid::createUuid());
+        entry->setGroup(database->rootGroup());
+        entry->attachments()->set(QStringLiteral("id_ed25519"), key.privateKey().toUtf8());
+
+        KeeAgentSettings settings;
+        settings.setAllowUseOfSshKey(true);
+        settings.setAddAtDatabaseOpen(addAtDatabaseOpen);
+        settings.setSelectedType(QStringLiteral("attachment"));
+        settings.setAttachmentName(QStringLiteral("id_ed25519"));
+        settings.toEntry(entry);
+        return entry;
+    };
+
+    const auto allowedEntry = addEntry(allowedKey, true);
+    addEntry(deniedKey, true);
+    const auto manualOnlyEntry = addEntry(manualOnlyKey, false);
+
+    const auto verifyLoaded = [&agent](const OpenSSHKey& key, bool expected) {
+        bool loaded = false;
+        QVERIFY(agent.checkIdentity(key, loaded));
+        QCOMPARE(loaded, expected);
+    };
+
+    // A missing database member preserves the existing AddAtDatabaseOpen behavior.
+    agent.databaseUnlocked(database);
+    verifyLoaded(allowedKey, true);
+    verifyLoaded(deniedKey, true);
+    verifyLoaded(manualOnlyKey, false);
+    QVERIFY(agent.clearAllAgentIdentities());
+
+    const auto databaseId = database->rootGroup()->uuid().toString();
+    QVERIFY(database->rootGroup()->uuid() != database->uuid());
+
+    // A present empty allowlist suppresses all automatic loading.
+    QVariantHash autoLoadAllowlists;
+    autoLoadAllowlists.insert(databaseId, QStringList{});
+    config()->set(Config::SSHAgent_AutoLoadAllowlists, autoLoadAllowlists);
+    agent.databaseUnlocked(database);
+    verifyLoaded(allowedKey, false);
+    verifyLoaded(deniedKey, false);
+    verifyLoaded(manualOnlyKey, false);
+
+    // The stable root group UUID selects the database allowlist. Entries still need AddAtDatabaseOpen.
+    autoLoadAllowlists.insert(databaseId,
+                              QStringList{allowedEntry->uuid().toString(), manualOnlyEntry->uuid().toString()});
+    config()->set(Config::SSHAgent_AutoLoadAllowlists, autoLoadAllowlists);
+    agent.databaseUnlocked(database);
+    verifyLoaded(allowedKey, true);
+    verifyLoaded(deniedKey, false);
+    verifyLoaded(manualOnlyKey, false);
 }
 
 void TestSSHAgent::testRemoveOnClose()

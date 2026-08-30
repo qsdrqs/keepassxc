@@ -200,6 +200,7 @@ static const QHash<Config::ConfigKey, ConfigDirective> configStrings = {
     {Config::SSHAgent_UsePageant, {QS("SSHAgent/UsePageant"), Roaming, true} },
     {Config::SSHAgent_AuthSockOverride, {QS("SSHAgent/AuthSockOverride"), Local, {}}},
     {Config::SSHAgent_SecurityKeyProviderOverride, {QS("SSHAgent/SecurityKeyProviderOverride"), Local, {}}},
+    {Config::SSHAgent_AutoLoadAllowlists, {QS("SSHAgent/AutoLoadAllowlists"), Local, QVariantHash{}}},
 
     // FdoSecrets
     {Config::FdoSecrets_Enabled, {QS("FdoSecrets/Enabled"), Roaming, false}},

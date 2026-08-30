@@ -602,6 +602,7 @@ void EditEntryWidget::setupEntryUpdate()
 
 #ifdef KPXC_FEATURE_SSHAGENT
     // SSH Agent tab
+    connect(m_sshAgentUi->autoLoadOnThisComputerCheckBox, SIGNAL(stateChanged(int)), this, SLOT(setModified()));
     if (sshAgent()->isEnabled()) {
         connect(m_sshAgentUi->attachmentRadioButton, SIGNAL(toggled(bool)), this, SLOT(setModified()));
         connect(m_sshAgentUi->externalFileRadioButton, SIGNAL(toggled(bool)), this, SLOT(setModified()));
@@ -690,6 +691,10 @@ void EditEntryWidget::setupSSHAgent()
     connect(m_sshAgentUi->decryptButton, &QPushButton::clicked, this, &EditEntryWidget::decryptPrivateKey);
     connect(m_sshAgentUi->copyToClipboardButton, &QPushButton::clicked, this, &EditEntryWidget::copyPublicKey);
     connect(m_sshAgentUi->generateButton, &QPushButton::clicked, this, &EditEntryWidget::generatePrivateKey);
+    connect(m_sshAgentUi->addKeyToAgentCheckBox,
+            &QCheckBox::toggled,
+            m_sshAgentUi->autoLoadOnThisComputerCheckBox,
+            &QCheckBox::setEnabled);
 
     connect(m_attachments.data(), &EntryAttachments::modified,
             this, &EditEntryWidget::updateSSHAgentAttachments);
@@ -701,6 +706,13 @@ void EditEntryWidget::setupSSHAgent()
 void EditEntryWidget::setSSHAgentSettings()
 {
     m_sshAgentUi->addKeyToAgentCheckBox->setChecked(m_sshAgentSettings.addAtDatabaseOpen());
+    m_sshAgentUi->autoLoadOnThisComputerCheckBox->setEnabled(m_sshAgentSettings.addAtDatabaseOpen());
+    const auto autoLoadAllowlists = config()->get(Config::SSHAgent_AutoLoadAllowlists).toHash();
+    const auto databaseId = m_db->rootGroup()->uuid().toString();
+    const auto entryId = m_entry->uuid().toString();
+    m_sshAgentUi->autoLoadOnThisComputerCheckBox->setChecked(
+        !autoLoadAllowlists.contains(databaseId)
+        || autoLoadAllowlists.value(databaseId).toStringList().contains(entryId));
     m_sshAgentUi->removeKeyFromAgentCheckBox->setChecked(m_sshAgentSettings.removeAtDatabaseClose());
     m_sshAgentUi->requireUserConfirmationCheckBox->setChecked(m_sshAgentSettings.useConfirmConstraintWhenAdding());
     m_sshAgentUi->lifetimeCheckBox->setChecked(m_sshAgentSettings.useLifetimeConstraintWhenAdding());
@@ -830,6 +842,45 @@ void EditEntryWidget::toKeeAgentSettings(KeeAgentSettings& settings) const
 
     // we don't use this either but we don't want it to dirty flag the config
     settings.setSaveAttachmentToTempFile(m_sshAgentSettings.saveAttachmentToTempFile());
+}
+
+void EditEntryWidget::updateSSHAgentAutoLoadAllowlist()
+{
+    auto autoLoadAllowlists = config()->get(Config::SSHAgent_AutoLoadAllowlists).toHash();
+    const auto databaseId = m_db->rootGroup()->uuid().toString();
+    const auto entryId = m_entry->uuid().toString();
+
+    if (!autoLoadAllowlists.contains(databaseId)) {
+        if (m_sshAgentUi->autoLoadOnThisComputerCheckBox->isChecked()) {
+            return;
+        }
+
+        QStringList autoLoadAllowlist;
+        for (const auto entry : m_db->rootGroup()->entriesRecursive()) {
+            if (entry == m_entry || entry->isRecycled()) {
+                continue;
+            }
+
+            KeeAgentSettings settings;
+            if (settings.fromEntry(entry) && settings.allowUseOfSshKey() && settings.addAtDatabaseOpen()) {
+                autoLoadAllowlist.append(entry->uuid().toString());
+            }
+        }
+        autoLoadAllowlist.removeDuplicates();
+        autoLoadAllowlist.sort();
+        autoLoadAllowlists.insert(databaseId, autoLoadAllowlist);
+    } else {
+        auto autoLoadAllowlist = autoLoadAllowlists.value(databaseId).toStringList();
+        autoLoadAllowlist.removeAll(entryId);
+        if (m_sshAgentUi->autoLoadOnThisComputerCheckBox->isChecked()) {
+            autoLoadAllowlist.append(entryId);
+        }
+        autoLoadAllowlist.removeDuplicates();
+        autoLoadAllowlist.sort();
+        autoLoadAllowlists.insert(databaseId, autoLoadAllowlist);
+    }
+
+    config()->set(Config::SSHAgent_AutoLoadAllowlists, autoLoadAllowlists);
 }
 
 void EditEntryWidget::updateTotp()
@@ -1309,6 +1360,12 @@ bool EditEntryWidget::commitEntry()
         m_entry->endUpdate();
     }
     // End entry update
+
+#ifdef KPXC_FEATURE_SSHAGENT
+    if (sshAgent()->isEnabled()) {
+        updateSSHAgentAutoLoadAllowlist();
+    }
+#endif
 
     m_historyModel->setEntries(m_entry->historyItems(), m_entry);
     setPageHidden(m_historyWidget, m_history || m_entry->historyItems().count() < 1);
